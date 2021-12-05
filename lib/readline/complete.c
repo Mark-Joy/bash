@@ -228,6 +228,11 @@ int _rl_menu_complete_prefix_first = 0;
 
 /* Global variables available to applications using readline. */
 
+/* If 1, dollar sign ("$") will neither be quoted (by bash_quote_filename(),
+   sh_double_quote(), sh_backslash_quote()) nor be dequoted 
+   (by bash_dequote_filename())*/
+int rl_noquote_nodequote_dollar = 0;
+
 #if defined (VISIBLE_STATS)
 /* Non-zero means add an additional character to each filename displayed
    during listing completion iff rl_filename_completion_desired which helps
@@ -1120,9 +1125,13 @@ _rl_find_completion_word (int *fp, int *dp)
 	      /* Ignore everything until the matching close quote char. */
 	      if (rl_line_buffer[scan] == quote_char)
 		{
-		  /* Found matching close.  Abandon this substring. */
-		  quote_char = '\0';
-		  rl_point = end;
+			/* Dont abandon closing quote if it is the last character */
+			if (end - scan > 1)
+			{
+				/* Found matching close.  Abandon this substring. */
+				quote_char = '\0';
+				rl_point = end;
+			}
 		}
 	    }
 	  else if (strchr (rl_completer_quote_characters, rl_line_buffer[scan]))
@@ -1753,8 +1762,8 @@ display_matches (char **matches)
 static char *
 make_quoted_replacement (char *match, int mtype, char *qc)
 {
-  int should_quote, do_replace;
-  char *replacement;
+  int should_quote, do_replace, bsize, psize;
+  char *replacement, *base, *base_quoted, *path, *path_quoted, *tmp;
 
   /* If we are doing completion on quoted substrings, and any matches
      contain any of the completer_word_break_characters, then auto-
@@ -1766,7 +1775,7 @@ make_quoted_replacement (char *match, int mtype, char *qc)
      matches don't require a quoted substring. */
   replacement = match;
 
-  should_quote = match && rl_completer_quote_characters &&
+  should_quote = match && *match != '\0' && rl_completer_quote_characters &&
 			rl_filename_completion_desired &&
 			rl_filename_quoting_desired;
 
@@ -1778,16 +1787,76 @@ make_quoted_replacement (char *match, int mtype, char *qc)
     {
       /* If there is a single match, see if we need to quote it.
          This also checks whether the common prefix of several
-	 matches needs to be quoted. */
-      should_quote = rl_filename_quote_characters
+      matches needs to be quoted. */
+      /*should_quote = rl_filename_quote_characters
 			? (_rl_strpbrk (match, rl_filename_quote_characters) != 0)
-			: 0;
+			: 0;*/
 
       do_replace = should_quote ? mtype : NO_MATCH;
       /* Quote the replacement, since we found an embedded
 	 word break character in a potential match. */
-      if (do_replace != NO_MATCH && rl_filename_quoting_function)
-	replacement = (*rl_filename_quoting_function) (match, do_replace, qc);
+      
+      if (do_replace != NO_MATCH && rl_filename_quoting_function) 
+      {
+      	psize = strlen(match);
+      	if (match[psize-1] == '/')
+      	{
+      		path = match;
+      		base = 0;
+      		base_quoted = 0;
+      	}
+      	else
+      	{
+      		base = printable_part(match);
+      		psize = base - match;
+      		path = (char *)xmalloc(psize + 1);
+      		strlcpy(path, match, psize + 1);
+          }
+          
+          // disallow quoting dollar ($) sign if it is present in pathname
+          rl_noquote_nodequote_dollar = 1;
+          path_quoted = (*rl_filename_quoting_function) (path, SINGLE_MATCH, qc);
+          rl_noquote_nodequote_dollar = 0;
+          
+          if (base == 0)
+          {
+          	replacement = path_quoted;
+          }
+          else
+          {
+          	// allow quoting dollar ($) sign if it is present in basename
+          	// already allowed it on the above code
+          	// rl_noquote_nodequote_dollar = 0;
+          	base_quoted = (*rl_filename_quoting_function) (base, SINGLE_MATCH, qc);
+
+          	psize = strlen(path_quoted);
+          	bsize = strlen(base_quoted);
+          	if (*qc == '"' || *qc == '\'')
+          	{
+          		// remove closing quote character of path_quoted
+          		// remove openning quote character of base_quoted
+          		psize -= 1;
+          		bsize -= 1;
+          		// causes xfree(base_quoted) bug.
+          		// base_quoted+=1;
+          		tmp = base_quoted + 1;
+              }
+              else
+              {
+              	tmp = base_quoted;
+              }
+              
+              replacement = (char *)xmalloc(psize + bsize + 1);
+              // https://www.geeksforgeeks.org/why-strcpy-and-strncpy-are-not-safe-to-use/amp/
+              strlcpy(replacement, path_quoted, psize + 1);
+              strlcpy(replacement + psize, tmp, bsize + 1);
+              
+              xfree(path);
+              xfree(path_quoted);
+              xfree(base_quoted);
+          }
+          //replacement = (*rl_filename_quoting_function) (match, do_replace, qc);
+        }
     }
   return (replacement);
 }
@@ -1891,7 +1960,19 @@ append_to_match (char *text, int delimiter, int quote_char, int nontrivial_match
 	      if (rl_point && rl_line_buffer[rl_point] == '\0' && rl_line_buffer[rl_point - 1] == '/')
 		;
 	      else if (rl_line_buffer[rl_point] != '/')
-		rl_insert_text ("/");
+	      {
+	      	/* insert '/' and move quote_char to the end */
+	      	if (quote_char 
+	      		&& rl_line_buffer[rl_point-1] == quote_char)
+	      	{
+	      		rl_line_buffer[rl_point-1] = '/';
+	      		rl_insert_text(&quote_char);
+	      	}
+	      	else
+	      	{
+	      		rl_insert_text ("/");
+	      	}
+	      }
 	    }
 	}
 #ifdef S_ISLNK
@@ -2463,6 +2544,8 @@ rl_filename_completion_function (const char *text, int state)
   int tilde_dirname;
   struct dirent *entry;
 
+  rl_noquote_nodequote_dollar = 1;
+  
   /* If we don't have any state, then do some initialization. */
   if (state == 0)
     {
@@ -2518,6 +2601,10 @@ rl_filename_completion_function (const char *text, int state)
       else
 	users_dirname = savestring (dirname);
 
+      /* Use dequoted users_dirname if it is available */
+      xfree(dirname);
+      dirname = savestring (users_dirname);
+      
       tilde_dirname = 0;
       if (*dirname == '~')
 	{
@@ -2627,6 +2714,7 @@ rl_filename_completion_function (const char *text, int state)
 	  users_dirname = (char *)NULL;
 	}
 
+      rl_noquote_nodequote_dollar = 0;
       return (char *)NULL;
     }
   else
@@ -2665,6 +2753,7 @@ rl_filename_completion_function (const char *text, int state)
       if (convfn != dentry)
 	xfree (convfn);
 
+      rl_noquote_nodequote_dollar = 0;
       return (temp);
     }
 }
