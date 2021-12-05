@@ -36,6 +36,8 @@
 #include "shmbchar.h"
 #include "shmbutil.h"
 
+#include <readline/readline.h>
+
 extern char *ansic_quote PARAMS((char *, int, int *));
 extern int ansic_shouldquote PARAMS((const char *));
 
@@ -153,7 +155,9 @@ sh_double_quote (string)
   for (s = string; s && (c = *s); s++)
     {
       /* Backslash-newline disappears within double quotes, so don't add one. */
-      if ((sh_syntaxtab[c] & CBSDQUOTE) && c != '\n')
+      if ((sh_syntaxtab[c] & CBSDQUOTE) && c != '\n' 
+      	&& !(rl_noquote_nodequote_dollar && c == '$') 
+      	&& !(rl_noquote_nodequote_dollar && c == '\\' && s[1] == '$'))
 	*r++ = '\\';
 
 #if defined (HANDLE_MULTIBYTE)
@@ -280,7 +284,9 @@ sh_backslash_quote (string, table, flags)
     {
 #if defined (HANDLE_MULTIBYTE)
       /* XXX - isascii, even if is_basic(c) == 0 - works in most cases. */
-      if (c >= 0 && c <= 127 && backslash_table[(unsigned char)c] == 1)
+      if (c >= 0 && c <= 127 && backslash_table[(unsigned char)c] == 1 
+      	&& !(rl_noquote_nodequote_dollar && c == '$') 
+      	&& !(rl_noquote_nodequote_dollar && c == '\\' && s[1] == '$'))
 	{
 	  *r++ = '\\';
 	  *r++ = c;
@@ -294,7 +300,9 @@ sh_backslash_quote (string, table, flags)
 	  continue;
 	}
 #endif
-      if (backslash_table[(unsigned char)c] == 1)
+      if (backslash_table[(unsigned char)c] == 1 
+      	&& (!(rl_noquote_nodequote_dollar && c == '$')) 
+      	&& !(rl_noquote_nodequote_dollar && c == '\\' && s[1] == '$'))
 	*r++ = '\\';
       else if (c == '#' && s == string)			/* comment char */
 	*r++ = '\\';
