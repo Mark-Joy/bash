@@ -154,6 +154,11 @@ static int bash_directory_completion_hook PARAMS((char **));
 static int filename_completion_ignore PARAMS((char **));
 static int bash_push_line PARAMS((void));
 
+static int bash_rl_filename_stat_hook PARAMS((char **));
+static int bash_rl_directory_completion_hook PARAMS((char **));
+static void reset_bash_expand_prompt_string_flags();
+
+
 static int executable_completion PARAMS((const char *, int));
 
 static rl_icppfunc_t *save_directory_hook PARAMS((void));
@@ -267,6 +272,16 @@ static int vi_edit_and_execute_command PARAMS((int, int));
 static int bash_vi_complete PARAMS((int, int));
 #endif
 static int emacs_edit_and_execute_command PARAMS((int, int));
+
+/* Control how to handle backslashes and quoting for filename expansion in
+bash_directory_completion_hook() or bash_filename_stat_hook().
+It is actually passed through to expand_prompt_string()*/
+int bash_expand_prompt_string_quoted = 0;
+
+/* Flags to control how to perform filename expansion in
+bash_directory_completion_hook() or bash_filename_stat_hook().
+It is actually passed through to expand_prompt_string()*/
+int bash_expand_prompt_string_flags = W_NOCOMSUB|W_NOPROCSUB|W_COMPLETE;
 
 /* Non-zero once initialize_readline () has been called. */
 int bash_readline_initialized = 0;
@@ -584,7 +599,8 @@ initialize_readline ()
 
   rl_filename_rewrite_hook = bash_filename_rewrite_hook;
 
-  rl_filename_stat_hook = bash_filename_stat_hook;
+  rl_filename_stat_hook = bash_rl_filename_stat_hook;
+  reset_bash_expand_prompt_string_flags();
 
   /* Tell the filename completer we want a chance to ignore some names. */
   rl_ignore_some_completions_function = filename_completion_ignore;
@@ -668,9 +684,12 @@ bashline_reset ()
   rl_ignore_some_completions_function = filename_completion_ignore;
   rl_filename_quote_characters = default_filename_quote_characters;
   set_filename_bstab (rl_filename_quote_characters);
+  
+  rl_noquote_nodequote_dollar = 0;
 
   set_directory_hook ();
-  rl_filename_stat_hook = bash_filename_stat_hook;
+  rl_filename_stat_hook = bash_rl_filename_stat_hook;
+  reset_bash_expand_prompt_string_flags();
 
   bashline_reset_event_hook ();
 
@@ -1516,10 +1535,12 @@ attempt_shell_completion (text, start, end)
   matches = (char **)NULL;
   rl_ignore_some_completions_function = filename_completion_ignore;
 
+  rl_noquote_nodequote_dollar = 0;
   rl_filename_quote_characters = default_filename_quote_characters;
   set_filename_bstab (rl_filename_quote_characters);
   set_directory_hook ();
-  rl_filename_stat_hook = bash_filename_stat_hook;
+  rl_filename_stat_hook = bash_rl_filename_stat_hook;
+  reset_bash_expand_prompt_string_flags();
 
   rl_sort_completion_matches = 1;	/* sort by default */
 
@@ -3214,12 +3235,12 @@ set_directory_hook ()
 {
   if (dircomplete_expand)
     {
-      rl_directory_completion_hook = bash_directory_completion_hook;
+      rl_directory_completion_hook = bash_rl_directory_completion_hook;
       rl_directory_rewrite_hook = (rl_icppfunc_t *)0;
     }
   else
     {
-      rl_directory_rewrite_hook = bash_directory_completion_hook;
+      rl_directory_rewrite_hook = bash_rl_directory_completion_hook;
       rl_directory_completion_hook = (rl_icppfunc_t *)0;
     }
 }
@@ -3284,7 +3305,7 @@ directory_exists (dirname, should_dequote)
 static int
 bash_filename_stat_hook (dirname)
      char **dirname;
-{
+{ 
   char *local_dirname, *new_dirname, *t;
   int should_expand_dirname, return_value;
   int global_nounset;
@@ -3307,7 +3328,8 @@ bash_filename_stat_hook (dirname)
 	 have to worry about restoring this setting. */
       global_nounset = unbound_vars_is_error;
       unbound_vars_is_error = 0;
-      wl = expand_prompt_string (new_dirname, 0, W_NOCOMSUB|W_NOPROCSUB|W_COMPLETE);	/* does the right thing */
+      int quoted = 0;
+      wl = expand_prompt_string (new_dirname, bash_expand_prompt_string_quoted, bash_expand_prompt_string_flags); /* does the right thing */
       unbound_vars_is_error = global_nounset;
       if (wl)
 	{
@@ -3364,7 +3386,7 @@ bash_filename_stat_hook (dirname)
 static int
 bash_directory_completion_hook (dirname)
      char **dirname;
-{
+{  
   char *local_dirname, *new_dirname, *t;
   int return_value, should_expand_dirname, nextch, closer;
   WORD_LIST *wl;
@@ -3411,7 +3433,7 @@ bash_directory_completion_hook (dirname)
   if (should_expand_dirname)  
     {
       new_dirname = savestring (local_dirname);
-      wl = expand_prompt_string (new_dirname, 0, W_NOCOMSUB|W_NOPROCSUB|W_COMPLETE);	/* does the right thing */
+      wl = expand_prompt_string (new_dirname, bash_expand_prompt_string_quoted, bash_expand_prompt_string_flags); /* does the right thing */
       if (wl)
 	{
 	  *dirname = string_list (wl);
@@ -3535,6 +3557,55 @@ bash_directory_completion_hook (dirname)
     }
 
   return (return_value);
+}
+
+/* wrap of bash_filename_stat_hook for rl_filename_completion_function() 
+that set the correct flags before calling and restore flags after*/
+static int bash_rl_filename_stat_hook (dirname)
+char **dirname;
+{
+	if (rl_completion_quote_character == '\'') return 0;
+	
+	int ret = 0,
+		quoted = bash_expand_prompt_string_quoted,
+		flags = bash_expand_prompt_string_flags;
+		
+	bash_expand_prompt_string_quoted = Q_DOUBLE_QUOTES;
+	bash_expand_prompt_string_flags = W_DQUOTE|W_NOCOMSUB|W_NOPROCSUB|W_COMPLETE;
+	
+	ret = bash_filename_stat_hook(dirname);
+	
+	bash_expand_prompt_string_quoted = quoted;
+	bash_expand_prompt_string_flags = flags;
+	return ret;
+}
+
+/* wrap of bash_directory_completion_hook for rl_filename_completion_function()
+that set the correct flags before calling and restore flags after*/
+static int bash_rl_directory_completion_hook (dirname)
+char **dirname;
+{
+	if (rl_completion_quote_character == '\'') return 0;
+	
+	int ret = 0,
+		quoted = bash_expand_prompt_string_quoted,
+		flags = bash_expand_prompt_string_flags;
+		
+	bash_expand_prompt_string_quoted = Q_DOUBLE_QUOTES;
+	bash_expand_prompt_string_flags = W_DQUOTE|W_NOCOMSUB|W_NOPROCSUB|W_COMPLETE;
+	
+	ret = bash_directory_completion_hook(dirname);
+	
+	bash_expand_prompt_string_quoted = quoted;
+	bash_expand_prompt_string_flags = flags;
+	return ret;
+}
+
+/* Set the flags to default values */
+static void reset_bash_expand_prompt_string_flags()
+{
+	bash_expand_prompt_string_quoted = 0;
+	bash_expand_prompt_string_flags = W_NOCOMSUB|W_NOPROCSUB|W_COMPLETE;
 }
 
 static char **history_completion_array = (char **)NULL;
@@ -4033,7 +4104,7 @@ bash_dequote_filename (text, quote_char)
       if (*p == '\\')
 	{
 	  /* Backslashes are preserved within single quotes. */
-	  if (quoted == '\'')
+	  if (quoted == '\'' || (rl_noquote_nodequote_dollar && p[1] == '$'))
 	    *r++ = *p;
 	  /* Backslashes are preserved within double quotes unless the
 	     character is one that is defined to be escaped */

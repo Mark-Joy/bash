@@ -509,6 +509,11 @@ extern char *filename_completion_function PARAMS((const char *, int));
 /*								    */
 /* **************************************************************** */
 
+/* If 1, dollar sign ("$") will neither be quoted (by bash_quote_filename(),
+   sh_double_quote(), sh_backslash_quote()) nor be dequoted 
+   (by bash_dequote_filename())*/
+extern int rl_noquote_nodequote_dollar;
+
 /* The version of this incarnation of the readline library. */
 extern const char *rl_library_version;		/* e.g., "4.2" */
 extern int rl_readline_version;			/* e.g., 0x0402 */
